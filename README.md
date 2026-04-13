@@ -5,7 +5,7 @@
 このドキュメントは、CobotMagic で `pi0` / `pi05` を動かす方法と、ファインチューニング手順をまとめたものです。
 
 - 現在、デプロイ可能な GPU サーバーは `ginkaku` のみです。
-- CobotMagic 向けのメイン実装は `cobotmagic_deployment/` 配下に集約しています。
+- CobotMagic 向けのメイン実装は `cobotmagic/` 配下に集約しています。
 
 ## Preparation
 
@@ -31,8 +31,22 @@ docker run -it --gpus all \
 git clone --recurse-submodules \
 https://github.com/Tanichu-Laboratory/pi0_CobotMagic.git
 ```
+### 3. 仮想環境のセットアップ
+ROS-Noetic用のconda環境 \
+※conda自体のセットアップはこちらを参照してください：https://developers.google.com/earth-engine/guides/python_install-conda?hl=ja
+```bash
+conda env create -n aloha <THIS REP>/aloha.yml
+```
+pi0用のuv環境
+```bash
+pip install uv #if needed
+cd <THID REP>
+GIT_LFS_SKIP_SMUDGE=1 uv sync
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+```
 
-### 3. ROSのURI設定ファイルを作成する
+
+### 4. ROSのURI設定ファイルを作成する
 ```bash
 cat > ~/.setup_ros.sh <<'EOF'
 # > export ROS_MASTER_URI=http://10.228.162.34:11311
