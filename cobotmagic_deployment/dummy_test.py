@@ -59,9 +59,16 @@ def main():
     with open(args.config, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
 
+    openpi_cfg = cfg.get('openpi', {})
+    policy_config_name = openpi_cfg.get('policy_config_name', 'pi0_mobile_aloha_lora_local')
+    checkpoint_dir = openpi_cfg.get(
+        'checkpoint_dir',
+        '/workspace/project/openpi/checkpoints/pi0_mobile_aloha_local/mobile_aloha_lora/10000',
+    )
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"[openpi] running on {device}")
-    policy = Pi0Policy()
+    policy = Pi0Policy(config_name=policy_config_name, checkpoint_dir=checkpoint_dir)
     print('[openpi] model loaded')
     torch.set_grad_enabled(False)
 
@@ -71,15 +78,10 @@ def main():
 
 
     task_prompt = "dummy-task"
-    img_path = os.path.join(os.path.dirname(__file__), "camera_test.png")
-    base_img = cv2.imread(img_path)
-    if base_img is None:
-        base_img = np.zeros((rgb_h, rgb_w, 3), dtype=np.uint8)
-
     imgs = {
-        "front": base_img,
-        "left": base_img.copy(),
-        "right": base_img.copy(),
+        "front": np.random.randint(0, 256, size=(rgb_h, rgb_w, 3), dtype=np.uint8),
+        "left": np.random.randint(0, 256, size=(rgb_h, rgb_w, 3), dtype=np.uint8),
+        "right": np.random.randint(0, 256, size=(rgb_h, rgb_w, 3), dtype=np.uint8),
     }
     jleft = np.array([0.0, -0.5, 0.5, 0.0, 0.2, -0.2, 0.8], dtype=np.float32)
     jright = np.array([0.0, 0.5, -0.5, 0.0, -0.2, 0.2, 0.8], dtype=np.float32)

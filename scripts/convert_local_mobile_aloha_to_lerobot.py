@@ -16,13 +16,13 @@ from lerobot.common.constants import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import tyro
 
-# dict{data_dir_name : task prompt}
+### dict{data_dir_name : task prompt} (below is just examples) ###
 DEFAULT_PROMPTS = {
-    "pen": "uncap the pen and leave it on the table",
-    "pet": "uncap the plastic bottle",
-    "ziploc": "open the ziploc bag",
-    "ziploc2": "open the ziploc bag",
+    "dir1": "uncap the pen and leave it on the table",
+    "dir2": "uncap the plastic bottle",
+    "dir3": "open the ziploc bag"
 }
+
 
 CAMERA_ALIASES = {
     "cam_high": "top",

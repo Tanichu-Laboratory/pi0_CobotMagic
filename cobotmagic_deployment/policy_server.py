@@ -117,6 +117,13 @@ def main():
     with open(args.config, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
 
+    openpi_cfg = cfg.get('openpi', {})
+    policy_config_name = openpi_cfg.get('policy_config_name', 'pi0_mobile_aloha_lora_local')
+    checkpoint_dir = openpi_cfg.get(
+        'checkpoint_dir',
+        '/workspace/project/openpi/checkpoints/pi0_mobile_aloha_local/mobile_aloha_lora/10000',
+    )
+
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.REP)
     bind_addr = cfg['zmq'].get('server_bind', 'tcp://127.0.0.1:5557')
@@ -125,7 +132,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"[openpi] running on {device}")
-    policy = Pi0Policy()
+    policy = Pi0Policy(config_name=policy_config_name, checkpoint_dir=checkpoint_dir)
     print('[openpi] model loaded')
     torch.set_grad_enabled(False)
 

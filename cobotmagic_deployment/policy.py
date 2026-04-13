@@ -1,16 +1,33 @@
+import os
+import sys
+
 import numpy as np
 import torch.nn as nn
 from torch.nn import functional as F
 import torchvision.transforms as transforms
+
+# Ensure imports from `src/` resolve when running scripts from `cobotmagic/`.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from src.openpi.training import config as _config
 from src.openpi.policies import policy_config
 from src.openpi.shared import download
 
+DEFAULT_POLICY_CONFIG_NAME = "pi0_mobile_aloha_lora_local"
+DEFAULT_CHECKPOINT_DIR = "/workspace/project/openpi/checkpoints/pi0_mobile_aloha_local/mobile_aloha_lora/10000"
+
+
 class Pi0Policy(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        config_name: str = DEFAULT_POLICY_CONFIG_NAME,
+        checkpoint_dir: str = DEFAULT_CHECKPOINT_DIR,
+    ):
         super().__init__()
-        config = _config.get_config("pi0_mobile_aloha_lora_local")
-        checkpoint_dir = download.maybe_download("/workspace/project/openpi/checkpoints/pi0_mobile_aloha_local/mobile_aloha_lora/10000")
+        config = _config.get_config(config_name)
+        checkpoint_dir = download.maybe_download(os.path.expanduser(checkpoint_dir))
 
         # Create a trained policy.
         self.model = policy_config.create_trained_policy(config, checkpoint_dir)
