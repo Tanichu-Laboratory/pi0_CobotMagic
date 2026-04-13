@@ -5,7 +5,7 @@
 このドキュメントは、CobotMagic で `pi0` / `pi05` を動かす方法と、ファインチューニング手順をまとめたものです。
 
 - 現在、デプロイ可能な GPU サーバーは `ginkaku` のみです。
-- CobotMagic 向けのメイン実装は `cobotmagic/` 配下に集約しています。
+- CobotMagic 向けのメイン実装は `cobotmagic_deployment/` 配下に集約しています。
 
 ## Preparation
 
