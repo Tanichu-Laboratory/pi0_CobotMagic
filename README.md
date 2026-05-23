@@ -4,7 +4,7 @@
 
 このドキュメントは、CobotMagic で `pi0` / `pi05` を動かす方法と、ファインチューニング手順をまとめたものです。
 
-- 現在、デプロイ可能な GPU サーバーは `ginkaku` のみです。
+- 現在、デプロイ可能な GPU サーバーは `ginkaku, inari`です。
 - CobotMagic 向けのメイン実装は `cobotmagic/` 配下に集約しています。
 
 ## Preparation
@@ -35,7 +35,7 @@ https://github.com/Tanichu-Laboratory/pi0_CobotMagic.git
 ROS-Noetic用のconda環境 \
 ※conda自体のセットアップはこちらを参照してください：https://developers.google.com/earth-engine/guides/python_install-conda?hl=ja
 ```bash
-conda env create -n aloha <THIS REP>/aloha.yml
+conda env create -n aloha -f <THIS REP>/aloha.yml
 ```
 pi0用のuv環境
 ```bash
