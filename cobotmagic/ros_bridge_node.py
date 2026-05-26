@@ -3,7 +3,7 @@
 """
 ROS Noetic side bridge (Python 3.8).
 - Collects observations from ROS topics
-- Sends compact multipart messages to openpi-server via ZeroMQ (REQ)
+- Sends compact multipart messages to the policy server via ZeroMQ (REQ)
 - Receives actions (binary float32 arrays) and publishes to ROS
 - Designed for minimal overhead between separate conda environments
 """
@@ -38,6 +38,7 @@ buf = {
 }
 lock = threading.Lock()
 enable_state = True  # /enable_flag があればこれに従う
+published_first_command = False
 
 
 def encode_jpeg(img, quality=80):
@@ -144,6 +145,29 @@ def step_towards(current, target, step_lengths):
     return next_pos
 
 
+def clip_joint_delta(current, target, max_delta):
+    delta = target - current
+    return current + np.clip(delta, -max_delta, max_delta)
+
+
+def policy_socket_kind(name):
+    normalized = name.lower()
+    if normalized == 'pair':
+        return zmq.PAIR
+    if normalized == 'req':
+        return zmq.REQ
+    raise ValueError(f"Unsupported zmq.socket_type={name!r}; expected 'pair' or 'req'.")
+
+
+def make_policy_socket(ctx, connect_addr, timeout_ms, socket_type):
+    sock = ctx.socket(policy_socket_kind(socket_type))
+    sock.connect(connect_addr)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    return sock
+
+
 def move_to_home(pub_l, pub_r, name_list, target_left, target_right, step_lengths, rate_hz):
     jl, jr = wait_for_joint_arrays()
     if jl is None or jr is None:
@@ -177,6 +201,8 @@ def move_to_home(pub_l, pub_r, name_list, target_left, target_right, step_length
 
 
 def main():
+    global published_first_command
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', required=True, help='path to config.yaml')
     args = ap.parse_args()
@@ -184,12 +210,20 @@ def main():
     with open(args.config, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
 
-    rospy.init_node('openpi_bridge_node')
+    rospy.init_node('cobotmagic_policy_bridge_node')
 
     image_type = cfg['ros'].get('image_type', 'raw').lower()
     jpeg_quality = int(cfg['ros'].get('jpeg_quality', 80))
     rate_hz = int(cfg['ros'].get('rate_hz', 20))
     rate_hz = max(rate_hz, 1)
+    policy_response_timeout_sec = float(cfg['ros'].get('policy_response_timeout_sec', 5.0))
+    action_mode = cfg['ros'].get('action_mode', 'velocity').lower()
+    if action_mode not in ('velocity', 'absolute'):
+        raise ValueError(f"ros.action_mode must be 'velocity' or 'absolute', got {action_mode!r}")
+    open_loop_steps_cfg = cfg['ros'].get('open_loop_steps')
+    open_loop_steps = None if open_loop_steps_cfg is None else max(int(open_loop_steps_cfg), 1)
+    delta_clip_cfg = cfg['ros'].get('delta_clip')
+    delta_clip_enabled = bool(delta_clip_cfg and delta_clip_cfg.get('enabled', False))
     topics = cfg['ros']['topics']
     task_prompt = cfg.get('task_prompt', 'demo-task')
 
@@ -224,6 +258,12 @@ def main():
     # Publishers
     pub_l = rospy.Publisher(topics['cmd_joint_left'], JointState, queue_size=10)
     pub_r = rospy.Publisher(topics['cmd_joint_right'], JointState, queue_size=10)
+    enable_pub = None
+    if topics.get('enable_flag') and bool(cfg['ros'].get('publish_enable_flag', False)):
+        enable_pub = rospy.Publisher(topics['enable_flag'], Bool, queue_size=1, latch=True)
+        rospy.sleep(0.2)
+        enable_pub.publish(Bool(data=True))
+        rospy.loginfo(f"Published enable flag True on {topics['enable_flag']}.")
     pub_v = None
     if use_base:
         pub_v = rospy.Publisher(rb_topics['cmd_vel'], Twist, queue_size=10)
@@ -232,6 +272,21 @@ def main():
     name_list = cfg['ros'].get('joint_names', [f'joint{i}' for i in range(7)])
     home_cfg = cfg['ros'].get('home_position')
     step_lengths = cfg['ros'].get('arm_steps_length', [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.2])
+    delta_clip_left = None
+    delta_clip_right = None
+    if delta_clip_enabled:
+        max_delta = delta_clip_cfg.get('max_delta', step_lengths)
+        max_delta = np.asarray(max_delta, dtype=np.float32)
+        if max_delta.shape[0] != len(name_list):
+            rospy.logwarn("delta_clip.max_delta size mismatch; using arm_steps_length.")
+            max_delta = np.asarray(step_lengths, dtype=np.float32)
+        if max_delta.shape[0] != len(name_list):
+            rospy.logwarn("delta clip disabled: max_delta and arm_steps_length sizes do not match joint_names.")
+            delta_clip_enabled = False
+        else:
+            delta_clip_left = max_delta
+            delta_clip_right = max_delta
+            rospy.loginfo(f"Joint delta clip enabled: max_delta={max_delta.tolist()}")
     if home_cfg:
         try:
             target_left = np.array(home_cfg['left'], dtype=np.float32)
@@ -250,19 +305,18 @@ def main():
 
     # ZeroMQ client
     ctx = zmq.Context.instance()
-    sock = ctx.socket(zmq.REQ)
     connect_addr = cfg['zmq'].get('client_connect', 'tcp://127.0.0.1:5557')
-    sock.connect(connect_addr)
-    sock.setsockopt(zmq.LINGER, 0)
+    socket_type = cfg['zmq'].get('socket_type', 'req')
     recv_timeout_ms = max(int(1000 / rate_hz), 1)
-    sock.setsockopt(zmq.RCVTIMEO, recv_timeout_ms)
-    sock.setsockopt(zmq.SNDTIMEO, recv_timeout_ms)
-    rospy.loginfo(f"Connected to OpenPI server at {connect_addr}")
+    sock = make_policy_socket(ctx, connect_addr, recv_timeout_ms, socket_type)
+    rospy.loginfo(f"Policy server endpoint set to {connect_addr} using ZMQ {socket_type.upper()}")
 
     rate = rospy.Rate(rate_hz)
     dt = 1.0 / rate_hz / 4.0
     integrated_left = None
     integrated_right = None
+    last_response_wait_warn = 0.0
+    last_obs_wait_warn = 0.0
 
     try:
         while not rospy.is_shutdown():
@@ -271,6 +325,17 @@ def main():
                 continue
 
             if not have_obs(use_base=use_base):
+                now = time.monotonic()
+                if now - last_obs_wait_warn >= 2.0:
+                    with lock:
+                        missing = [
+                            key for key in ('front', 'left', 'right', 'jl', 'jr')
+                            if buf[key] is None
+                        ]
+                        if use_base and buf['odom'] is None:
+                            missing.append('odom')
+                    rospy.logwarn(f"Waiting for observations: missing={missing}")
+                    last_obs_wait_warn = now
                 rate.sleep()
                 continue
 
@@ -284,6 +349,8 @@ def main():
                 'task_prompt': pkt['task_prompt'],
                 'jleft': pkt['jleft'],
                 'jright': pkt['jright'],
+                'control_hz': rate_hz,
+                'action_mode': action_mode,
             }
             if use_base and pkt['odom'] is not None:
                 header['odom'] = pkt['odom']
@@ -292,6 +359,8 @@ def main():
             current_right = np.array(pkt['jright'], dtype=np.float32)
             integrated_left = current_left.copy()
             integrated_right = current_right.copy()
+            command_left = current_left.copy()
+            command_right = current_right.copy()
 
             frames = [
                 json.dumps(header, separators=(',', ':')).encode('utf-8'),
@@ -302,21 +371,42 @@ def main():
 
             try:
                 sock.send_multipart(frames)
+                rospy.loginfo_once(
+                    f"Sent first policy request to {connect_addr}; waiting for action response."
+                )
             except zmq.error.Again:
                 rospy.logwarn("ZeroMQ send timeout; skipping cycle.")
                 rate.sleep()
                 continue
 
             rep_frames = None
+            response_start = time.monotonic()
+            response_deadline = time.monotonic() + max(policy_response_timeout_sec, 0.1)
             while not rospy.is_shutdown():
                 try:
                     rep_frames = sock.recv_multipart()
                     break
                 except zmq.error.Again:
+                    now = time.monotonic()
+                    if now - response_start >= 2.0 and now - last_response_wait_warn >= 2.0:
+                        rospy.logwarn(
+                            f"Waiting for policy server response from {connect_addr}. "
+                            "If this persists, confirm the OpenVLA server is still running."
+                        )
+                        last_response_wait_warn = now
+                    if now >= response_deadline:
+                        rospy.logwarn(
+                            f"Policy server response timed out after {policy_response_timeout_sec:.1f}s; "
+                            "recreating ZeroMQ socket and skipping this cycle."
+                        )
+                        sock.close(0)
+                        sock = make_policy_socket(ctx, connect_addr, recv_timeout_ms, socket_type)
+                        break
                     continue
 
             if rospy.is_shutdown() or rep_frames is None:
-                break
+                rate.sleep()
+                continue
 
             if not rep_frames:
                 rate.sleep()
@@ -349,22 +439,52 @@ def main():
                 except ValueError:
                     vel_mat = None
 
-            for tau in range(chunk_size):
-                # velocity -> position
-                integrated_left = integrated_left + left_mat[tau] * dt
-                integrated_right = integrated_right + right_mat[tau] * dt
+            steps_to_execute = chunk_size if open_loop_steps is None else min(open_loop_steps, chunk_size)
+            if steps_to_execute < chunk_size:
+                rospy.logdebug(
+                    f"Executing {steps_to_execute}/{chunk_size} action steps; "
+                    "discarding the rest before the next observation."
+                )
 
-                integrated_left[-1] = left_mat[tau, -1]
-                integrated_right[-1] = right_mat[tau, -1]
+            for tau in range(steps_to_execute):
+                if action_mode == 'absolute':
+                    raw_target_left = left_mat[tau]
+                    raw_target_right = right_mat[tau]
+                    if delta_clip_enabled:
+                        target_left = clip_joint_delta(command_left, raw_target_left, delta_clip_left)
+                        target_right = clip_joint_delta(command_right, raw_target_right, delta_clip_right)
+                    else:
+                        target_left = raw_target_left
+                        target_right = raw_target_right
+                else:
+                    # velocity -> position
+                    integrated_left = integrated_left + left_mat[tau] * dt
+                    integrated_right = integrated_right + right_mat[tau] * dt
+                    integrated_left[-1] = left_mat[tau, -1]
+                    integrated_right[-1] = right_mat[tau, -1]
+                    if delta_clip_enabled:
+                        target_left = clip_joint_delta(command_left, integrated_left, delta_clip_left)
+                        target_right = clip_joint_delta(command_right, integrated_right, delta_clip_right)
+                    else:
+                        target_left = integrated_left
+                        target_right = integrated_right
+
+                command_left = target_left.copy()
+                command_right = target_right.copy()
 
                 now = rospy.Time.now()
                 js = JointState()
                 js.header.stamp = now
                 js.name = name_list
-                js.position = integrated_left.tolist()
+                js.position = target_left.tolist()
                 pub_l.publish(js)
-                js.position = integrated_right.tolist()
+                js.position = target_right.tolist()
                 pub_r.publish(js)
+                if not published_first_command:
+                    rospy.loginfo(
+                        f"Published first command to {topics['cmd_joint_left']} and {topics['cmd_joint_right']}."
+                    )
+                    published_first_command = True
 
                 if use_base and vel_mat is not None and pub_v is not None:
                     v = Twist()
@@ -375,7 +495,7 @@ def main():
                 rate.sleep()
 
     except (KeyboardInterrupt, rospy.ROSInterruptException):
-        rospy.loginfo("openpi_bridge_node interrupted, shutting down.")
+        rospy.loginfo("cobotmagic_policy_bridge_node interrupted, shutting down.")
     finally:
         sock.close(0)
 
