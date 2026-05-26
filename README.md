@@ -16,6 +16,7 @@
 ```bash
 docker run -it --gpus all \
   --name [container_name] \
+  --network host \
   --shm-size=32g \
   -v [your_mount_dir]:/workspace \
   pi0_bridge_env
